@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>滞留在庫チェック（試作）</title>
+<style>
+  body { font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; margin: 0; background: #f7f7f5; color: #222; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border: 1px solid #e3e3de; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  label { font-size: 13px; color: #444; display: block; margin-bottom: 4px; }
+  input[type="number"], input[type="date"] { padding: 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+  button { background: #1f6f4a; color: #fff; border: none; padding: 9px 16px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  button.secondary { background: #fff; color: #1f6f4a; border: 1px solid #1f6f4a; }
+  button:disabled { opacity: .45; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border-bottom: 1px solid #eee; padding: 7px 8px; text-align: left; }
+  th { background: #fafafa; font-weight: 600; }
+  td.num, th.num { text-align: right; }
+  .summary { display: flex; flex-wrap: wrap; gap: 16px; }
+  .stat { min-width: 140px; }
+  .stat .v { font-size: 20px; font-weight: 700; }
+  .stat .k { font-size: 12px; color: #666; }
+  .warn { color: #a33; font-size: 14px; white-space: pre-line; }
+  .note { font-size: 12px; color: #777; line-height: 1.7; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>滞留在庫チェック</h1>
+  <div class="sub">リユース店の台帳CSVから、長く売れていない在庫を洗い出す試作ツールです。</div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>台帳CSVファイル</label>
+        <input type="file" id="file" accept=".csv,text/csv">
+      </div>
+      <div>
+        <button class="secondary" id="sampleBtn" type="button">サンプルデータで試す</button>
+      </div>
+      <div>
+        <label>基準日</label>
+        <input type="date" id="baseDate">
+      </div>
+      <div>
+        <label>滞留とみなす日数（以上）</label>
+        <input type="number" id="threshold" value="90" min="1" style="width:90px">
+      </div>
+      <div>
+        <button id="runBtn" type="button" disabled>チェックする</button>
+      </div>
+    </div>
+    <p class="note" style="margin-top:12px">必要な列：商品名／カテゴリ／入荷日／仕入価格／売価／区分（在庫・売却）。データはこのブラウザの中だけで処理され、外部に送信されることはありません。</p>
+    <div id="error" class="warn"></div>
+  </div>
+
+  <div id="result" class="hidden">
+    <div class="card">
+      <div class="summary" id="summary"></div>
+    </div>
+    <div class="card">
+      <h2 style="font-size:16px;margin:0 0 10px">滞留リスト（仕入価格の大きい順）</h2>
+      <table>
+        <thead><tr><th>商品名</th><th>カテゴリ</th><th>入荷日</th><th class="num">滞留日数</th><th class="num">仕入価格</th><th class="num">値下げ幅（店主記入）</th></tr></thead>
+        <tbody id="staleBody"></tbody>
+      </table>
+      <div style="margin-top:12px"><button id="dlBtn" type="button">滞留リストをCSVでダウンロード</button></div>
+    </div>
+    <div class="card">
+      <h2 style="font-size:16px;margin:0 0 10px">カテゴリ別の滞留</h2>
+      <table>
+        <thead><tr><th>カテゴリ</th><th class="num">滞留点数</th><th class="num">滞留金額</th></tr></thead>
+        <tbody id="catBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="note">※ 価格の見直しや処分の判断は、店主ご自身で行ってください。このツールは判断材料の整理をお手伝いするものです。試作版のため、列名は上記の表記に合わせてください。</p>
+</div>
+
+<script>
+const SAMPLE_CSV = "商品名,カテゴリ,入荷日,仕入価格,売価,区分\n電子レンジ B,家電,2026-10-06,24500,,在庫\nトレカセット E,ホビー,2026-07-23,14700,22816,売却\nショルダーバッグ B,ブランドバッグ,2026-10-21,47400,,在庫\nシャツ F,衣料,2026-09-01,2500,,在庫\nラジコン G,ホビー,2026-07-23,9100,,在庫\nコート A,衣料,2026-02-13,3200,,在庫\nリュック D,ブランドバッグ,2026-05-14,61900,95644,売却\nクラッチバッグ G,ブランドバッグ,2026-02-13,104200,,在庫\nテレビ E,家電,2026-06-23,6700,,在庫\nスーツ H,衣料,2026-06-23,3800,,在庫\nボードゲーム F,ホビー,2026-05-14,9100,,在庫\nパーカー I,衣料,2026-10-06,2700,,在庫\nエアコン F,家電,2026-08-07,17100,,在庫\nデニム E,衣料,2026-06-23,4300,7342,売却\nハンドバッグ C,ブランドバッグ,2026-10-06,77400,,在庫\n自動巻き D,時計,2026-08-07,144700,,在庫\nクォーツ腕時計 E,時計,2026-09-21,51100,,在庫\nジャケット B,衣料,2026-05-14,6500,8949,売却\nゲーム機 A,ホビー,2026-08-07,13400,20416,売却\n洗濯機 D,家電,2026-04-04,17700,,在庫\nフィギュア D,ホビー,2026-09-01,9300,13591,売却\nレディース腕時計 B,時計,2026-10-21,75200,130570,売却\nカメラ B,ホビー,2026-02-13,10800,16823,売却\nスカート G,衣料,2026-05-14,5100,,在庫\nニット D,衣料,2026-07-23,6900,11133,売却\nトートバッグ A,ブランドバッグ,2026-07-31,55400,,在庫\n炊飯器 G,家電,2026-10-06,6500,,在庫\nブラウス J,衣料,2026-09-21,6800,12035,売却\nメンズ腕時計 A,時計,2026-10-21,148100,,在庫\nポーチ E,ブランドバッグ,2026-10-06,64600,99550,売却\nギター C,ホビー,2026-09-21,4900,,在庫\n長財布 F,ブランドバッグ,2026-04-04,52600,,在庫\nクロノグラフ C,時計,2026-08-07,115800,162468,売却\nワンピース C,衣料,2026-09-01,5100,,在庫\n小型冷蔵庫 C,家電,2026-07-31,13700,,在庫\n掃除機 A,家電,2026-07-23,6000,,在庫\n";
+let parsedRows = null;
+let lastStale = [];
+
+function parseCSV(text) {
+  text = text.replace(/^\uFEFF/, '');
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; } else { inQ = false; }
+      } else { field += c; }
+    } else if (c === '"') { inQ = true; }
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); field = ''; rows.push(row); row = []; }
+    else if (c === '\r') { /* skip */ }
+    else { field += c; }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.length > 1 || (r.length === 1 && r[0] !== ''));
+}
+
+function toNumber(s) {
+  if (s === undefined || s === null) return 0;
+  const n = parseInt(String(s).replace(/[^0-9\-]/g, ''), 10);
+  return isNaN(n) ? 0 : n;
+}
+
+function daysBetween(a, b) {
+  const ms = 24 * 60 * 60 * 1000;
+  return Math.floor((b - a) / ms);
+}
+
+function run() {
+  const err = document.getElementById('error');
+  err.textContent = '';
+  if (!parsedRows) { err.textContent = '先にCSVファイルを選ぶか、サンプルで試してください。'; return; }
+  const header = parsedRows[0].map(h => h.trim());
+  const need = ['商品名','カテゴリ','入荷日','仕入価格','売価','区分'];
+  const idx = {};
+  const missing = [];
+  need.forEach(k => { const i = header.indexOf(k); if (i < 0) missing.push(k); else idx[k] = i; });
+  if (missing.length) { err.textContent = '次の列が見つかりません：' + missing.join('、'); return; }
+
+  const baseVal = document.getElementById('baseDate').value;
+  const base = baseVal ? new Date(baseVal + 'T00:00:00') : new Date();
+  const th = parseInt(document.getElementById('threshold').value, 10) || 90;
+
+  const items = [];
+  for (let r = 1; r < parsedRows.length; r++) {
+    const row = parsedRows[r];
+    const dstr = (row[idx['入荷日']] || '').trim();
+    const d = new Date(dstr + 'T00:00:00');
+    if (isNaN(d)) continue;
+    items.push({
+      name: (row[idx['商品名']] || '').trim(),
+      cat: (row[idx['カテゴリ']] || '').trim(),
+      date: dstr,
+      days: daysBetween(d, base),
+      cost: toNumber(row[idx['仕入価格']]),
+      status: (row[idx['区分']] || '').trim()
+    });
+  }
+  const stock = items.filter(x => x.status === '在庫');
+  const stale = stock.filter(x => x.days >= th).sort((a, b) => b.cost - a.cost);
+  lastStale = stale;
+  const stockAmt = stock.reduce((s, x) => s + x.cost, 0);
+  const staleAmt = stale.reduce((s, x) => s + x.cost, 0);
+  const pct = stockAmt ? (staleAmt / stockAmt * 100).toFixed(1) : '0.0';
+
+  const yen = n => n.toLocaleString('ja-JP') + '円';
+  document.getElementById('summary').innerHTML =
+    '<div class="stat"><div class="k">在庫</div><div class="v">' + stock.length + '点</div><div class="k">' + yen(stockAmt) + '</div></div>' +
+    '<div class="stat"><div class="k">滞留（' + th + '日以上）</div><div class="v">' + stale.length + '点</div><div class="k">' + yen(staleAmt) + '</div></div>' +
+    '<div class="stat"><div class="k">在庫金額に占める滞留</div><div class="v">' + pct + '%</div><div class="k">基準日 ' + base.toLocaleDateString('ja-JP') + '</div></div>';
+
+  document.getElementById('staleBody').innerHTML = stale.map(x =>
+    '<tr><td>' + escapeHtml(x.name) + '</td><td>' + escapeHtml(x.cat) + '</td><td>' + x.date + '</td><td class="num">' + x.days + '日</td><td class="num">' + yen(x.cost) + '</td><td></td></tr>'
+  ).join('') || '<tr><td colspan="6">滞留に該当する在庫はありませんでした。</td></tr>';
+
+  const agg = {};
+  stale.forEach(x => { if (!agg[x.cat]) agg[x.cat] = [0, 0]; agg[x.cat][0]++; agg[x.cat][1] += x.cost; });
+  document.getElementById('catBody').innerHTML = Object.keys(agg).sort((a, b) => agg[b][1] - agg[a][1]).map(k =>
+    '<tr><td>' + escapeHtml(k) + '</td><td class="num">' + agg[k][0] + '点</td><td class="num">' + yen(agg[k][1]) + '</td></tr>'
+  ).join('') || '<tr><td colspan="3">該当なし</td></tr>';
+
+  document.getElementById('result').classList.remove('hidden');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.getElementById('file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    parsedRows = parseCSV(String(reader.result));
+    document.getElementById('runBtn').disabled = false;
+    run();
+  };
+  reader.readAsText(f, 'UTF-8');
+});
+
+document.getElementById('sampleBtn').addEventListener('click', () => {
+  parsedRows = parseCSV(SAMPLE_CSV);
+  document.getElementById('baseDate').value = '2026-10-31';
+  document.getElementById('runBtn').disabled = false;
+  run();
+});
+
+document.getElementById('runBtn').addEventListener('click', run);
+
+document.getElementById('dlBtn').addEventListener('click', () => {
+  const lines = [['商品名','カテゴリ','入荷日','滞留日数','仕入価格','値下げ幅（店主記入）']];
+  lastStale.forEach(x => lines.push([x.name, x.cat, x.date, x.days, x.cost, '']));
+  const csv = '\uFEFF' + lines.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'stale_list.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// 基準日の初期値は今日
+(function(){ const t = new Date(); const p = n => String(n).padStart(2,'0'); document.getElementById('baseDate').value = t.getFullYear() + '-' + p(t.getMonth()+1) + '-' + p(t.getDate()); })();
+</script>
+</body>
+</html>
